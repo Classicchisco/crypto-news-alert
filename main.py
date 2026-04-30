@@ -58,24 +58,67 @@ def get_impact_score(title: str):
         return "🟡 Medium Impact", "medium"
     return "🟢 Low Impact", "low"
 
+# ========================= ADVANCED SENTIMENT ENGINE =========================
+POSITIVE_WEIGHTS = {
+    "etf": 25,
+    "approval": 30,
+    "adoption": 20,
+    "partnership": 15,
+    "institutional": 20,
+    "upgrade": 10,
+    "bullish": 15,
+    "surge": 20,
+    "rally": 20
+}
+
+NEGATIVE_WEIGHTS = {
+    "hack": -35,
+    "exploit": -35,
+    "ban": -25,
+    "sec": -20,
+    "lawsuit": -25,
+    "rejected": -30,
+    "crash": -30,
+    "drop": -20,
+    "bearish": -15
+}
+
+def sentiment_score(title):
+    t = title.lower()
+    score = 0
+
+    for k, v in POSITIVE_WEIGHTS.items():
+        if k in t:
+            score += v
+
+    for k, v in NEGATIVE_WEIGHTS.items():
+        if k in t:
+            score += v
+
+    return max(-100, min(100, score))
+
 # ========================= SIGNAL ENGINE =========================
 def signal_engine(title, iclass):
-    t = title.lower()
-    score = 50
+    score = sentiment_score(title)
 
-    if any(x in t for x in ["etf","approval","adoption","partnership"]):
-        score += 15
-    if any(x in t for x in ["hack","exploit","ban","sec","lawsuit"]):
-        score -= 20
-
+    # impact influence (light, not dominating)
     if iclass == "high":
-        score += 15
+        score *= 1.2
+    elif iclass == "medium":
+        score *= 1.05
 
-    if score >= 70:
-        return "📈 LONG", score
-    elif score <= 40:
-        return "📉 SHORT", score
-    return "⚖️ NEUTRAL", score
+    score = max(-100, min(100, score))
+
+    if score >= 25:
+        return "📈 STRONG LONG", int(score)
+    elif score >= 10:
+        return "📈 LONG", int(score)
+    elif score <= -25:
+        return "📉 STRONG SHORT", int(abs(score))
+    elif score <= -10:
+        return "📉 SHORT", int(abs(score))
+    else:
+        return "⚖️ NEUTRAL", int(abs(score))
 
 # ========================= TELEGRAM =========================
 async def send_to_telegram(title, link, source, impact):
@@ -94,7 +137,6 @@ async def send_to_telegram(title, link, source, impact):
 🔗 {link}
 """
 
-    # SAVE SAME DATA FOR DASHBOARD
     cursor.execute('''
     INSERT OR REPLACE INTO seen_news VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (
@@ -153,8 +195,8 @@ async def fetch_news(scheduled=True):
 
             low = sorted(low, key=lambda x: x[0].get("published_parsed",(0,)), reverse=True)
 
-            if scheduled:
-                low = low[:MAX_LOW]
+            # ✅ SAME LIMIT FOR MANUAL + SCHEDULED
+            low = low[:MAX_LOW]
 
             final = high_medium + [(t,l,i) for _,t,l,i in low]
 
@@ -194,10 +236,10 @@ async def home(request: Request):
 <head>
 <title>Crypto Intelligence</title>
 <style>
-body{background:#0b0f14;color:#00ff99;font-family:Arial;margin:0}
-.header{padding:15px;background:#111}
-.card{background:#111;margin:10px;padding:12px;border-left:4px solid #00ff99;border-radius:8px;white-space:pre-wrap}
-button{background:#00ff99;border:none;padding:10px;margin:10px;cursor:pointer;font-weight:bold}
+body{background:#0b0f14;color:#e6edf3;font-family:Arial;margin:0}
+.header{padding:15px;background:#111;color:#00ffcc;font-size:20px}
+.card{background:#161b22;margin:10px;padding:15px;border-left:4px solid #00ffcc;border-radius:10px;white-space:pre-wrap;color:#e6edf3}
+button{background:#00ffcc;border:none;padding:10px;margin:10px;cursor:pointer;font-weight:bold;border-radius:5px}
 </style>
 </head>
 <body>
@@ -243,7 +285,7 @@ setInterval(load,5000);
 # ========================= MANUAL =========================
 @app.get("/fetch-now")
 async def manual():
-    asyncio.create_task(fetch_news(False))
+    asyncio.create_task(fetch_news(True))  # SAME AS SCHEDULED
     return {"status":"running"}
 
 # ========================= SCHEDULER =========================
@@ -259,4 +301,4 @@ for t in times:
 
 scheduler.start()
 
-print("🚀 FULL SYSTEM LIVE")
+print("🚀 SYSTEM UPGRADED SUCCESSFULLY")
