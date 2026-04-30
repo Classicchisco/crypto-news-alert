@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Crypto News Monitor</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            background: #0a0a0a; 
+            color: #00ff88; 
+            margin: 20px;
+        }
+        h1 { color: #00ff00; }
+        .news-item {
+            background: #1a1a1a;
+            padding: 12px;
+            margin: 10px 0;
+            border-radius: 6px;
+            border-left: 4px solid #00cc66;
+        }
+        a { color: #00ccff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .source { color: #888; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <h1>📰 Crypto News Aggregator</h1>
+    <p><a href="/fetch-now" style="color:yellow;">🔄 Click here to Fetch News Now</a></p>
+    
+    <h2>Latest 50 News</h2>
+    {% for item in news %}
+    <div class="news-item">
+        <div class="source">{{ item.source }} • {{ item.time }}</div>
+        <a href="{{ item.link }}" target="_blank">{{ item.title }}</a>
+    </div>
+    {% endfor %}
+
+    {% if not news %}
+    <p>No news yet. Click "Fetch News Now" to start.</p>
+    {% endif %}
+</body>
+</html>
