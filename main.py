@@ -26,14 +26,21 @@ RSS_FEEDS = [
     "https://thedefiant.io/feed/",
 ]
 
-HIGH_IMPACT = ["etf", "sec", "regulation", "ban", "hack", "exploit", "lawsuit", "approval", "rejected", "blackrock", "fidelity", "gary gensler"]
-MEDIUM_IMPACT = ["listing", "partnership", "upgrade", "mainnet", "adoption", "institutional", "whale", "binance"]
+HIGH_IMPACT = [
+    "etf", "sec", "regulation", "ban", "hack", "exploit",
+    "lawsuit", "approval", "rejected", "blackrock", "fidelity", "gary gensler"
+]
+
+MEDIUM_IMPACT = [
+    "listing", "partnership", "upgrade", "mainnet",
+    "adoption", "institutional", "whale", "binance"
+]
 
 WAT = pytz.timezone("Africa/Lagos")
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
-# ========================= DB (FIXED) =========================
+# ========================= DATABASE (FIXED + SAFE) =========================
 conn = sqlite3.connect("database.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -44,7 +51,7 @@ CREATE TABLE IF NOT EXISTS seen_news (
     link TEXT,
     source TEXT,
     impact TEXT,
-    signal_text TEXT,
+    signal_text TEXT DEFAULT '',
     added_at TEXT
 )
 """)
@@ -75,6 +82,7 @@ def impact_class(title):
 
 def impact_score(title, iclass):
     score = 10
+
     if iclass == "high":
         score += 60
     elif iclass == "medium":
@@ -83,9 +91,16 @@ def impact_score(title, iclass):
         score += 10
 
     boosts = {
-        "etf": 20, "sec": 15, "hack": 25, "exploit": 25,
-        "approval": 20, "ban": 20, "blackrock": 20,
-        "fidelity": 15, "whale": 10, "binance": 10
+        "etf": 20,
+        "sec": 15,
+        "hack": 25,
+        "exploit": 25,
+        "approval": 20,
+        "ban": 20,
+        "blackrock": 20,
+        "fidelity": 15,
+        "whale": 10,
+        "binance": 10
     }
 
     t = title.lower()
@@ -155,6 +170,7 @@ def entry_engine(price, signal):
 
 def commentary(title, iclass):
     t = title.lower()
+
     if "etf" in t:
         return "ETF narrative impacting liquidity expectations."
     if "sec" in t:
@@ -165,7 +181,7 @@ def commentary(title, iclass):
         return "Strong catalyst → volatility expansion."
     return "Low impact → muted reaction."
 
-# ========================= SEND =========================
+# ========================= SEND ENGINE =========================
 async def send_to_telegram(title, link, source, impact):
     iclass = impact.split()[1] if len(impact.split()) > 1 else "low"
 
@@ -176,7 +192,7 @@ async def send_to_telegram(title, link, source, impact):
 
     # FILTER
     if HIGH_PROBABILITY_ONLY and win_rate < 75:
-        print(f"Skipped: {title[:40]} (WR {win_rate})")
+        print(f"Skipped low quality: {title[:40]} (WR {win_rate})")
         return
 
     entry, invalidation, risk = entry_engine(btc_before, signal)
@@ -191,12 +207,21 @@ async def send_to_telegram(title, link, source, impact):
     msg += f"⚠️ Risk: {risk}\n"
     msg += f"\n🔗 {link}"
 
-    # SAVE FULL SIGNAL FOR DASHBOARD (FIXED)
-    signal_text = msg
+    signal_text = msg or ""
 
+    # SAFE DB INSERT (NO CRASH)
     cursor.execute("""
-    INSERT INTO seen_news VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (hash_id(title), title, link, source, impact, signal_text, datetime.now().isoformat()))
+    INSERT OR REPLACE INTO seen_news
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        hash_id(title),
+        title,
+        link,
+        source,
+        impact,
+        signal_text,
+        datetime.now().isoformat()
+    ))
     conn.commit()
 
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
@@ -238,15 +263,16 @@ async def fetch_news():
 
             await send_to_telegram(title, link, url, impact_text)
 
-# ========================= DASHBOARD (FIXED) =========================
+# ========================= DASHBOARD (STABLE) =========================
 @app.get("/", response_class=HTMLResponse)
 async def home():
     cursor.execute("""
-    SELECT signal_text, link 
-    FROM seen_news 
-    ORDER BY added_at DESC 
+    SELECT signal_text, link
+    FROM seen_news
+    ORDER BY added_at DESC
     LIMIT 50
     """)
+
     rows = cursor.fetchall()
 
     html = """
@@ -258,13 +284,14 @@ async def home():
     """
 
     for signal_text, link in rows:
-        if signal_text:
-            html += f"""
-            <div style="margin-bottom:15px;padding:10px;background:#111;border-radius:8px;">
-                <pre style="white-space:pre-wrap;color:#00ff99;">{signal_text}</pre>
-                <a href="{link}" style="color:#4da3ff;">Open Source</a>
-            </div>
-            """
+        signal_text = signal_text or "No signal"
+
+        html += f"""
+        <div style="margin-bottom:15px;padding:10px;background:#111;border-radius:8px;">
+            <pre style="white-space:pre-wrap;color:#00ff99;">{signal_text}</pre>
+            <a href="{link}" style="color:#4da3ff;">Open Source</a>
+        </div>
+        """
 
     html += "</body></html>"
     return HTMLResponse(html)
