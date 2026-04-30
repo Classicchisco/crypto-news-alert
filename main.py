@@ -59,7 +59,7 @@ def get_impact_score(title: str):
         return "🟡 Medium Impact", "medium"
     return "🟢 Low Impact", "low"
 
-# ========================= SENTIMENT ENGINE =========================
+# ========================= SENTIMENT =========================
 POSITIVE = ["etf","approval","adoption","partnership","institutional","surge","rally"]
 NEGATIVE = ["hack","exploit","ban","sec","lawsuit","rejected","crash","drop"]
 
@@ -77,21 +77,16 @@ def sentiment_score(title):
 
     return score
 
-# ========================= SIGNAL =========================
 def signal_engine(title, iclass):
     score = sentiment_score(title)
-
-    # variability factors
-    word_count = len(title.split())
-    score += int(word_count * 0.5)
+    score += len(title.split())
 
     if iclass == "high":
         score *= 1.2
     elif iclass == "medium":
         score *= 1.05
 
-    score += random.randint(-5,5)  # small variation
-
+    score += random.randint(-5,5)
     score = max(-100, min(100, score))
 
     if score > 15:
@@ -101,32 +96,9 @@ def signal_engine(title, iclass):
     else:
         return "⚖️ Neutral", abs(int(score))
 
-# ========================= TAGS =========================
 def generate_tags(title):
-    t = title.lower()
-    tags = []
-
-    if "bitcoin" in t or "btc" in t:
-        tags.append("#Bitcoin")
-    if "ethereum" in t or "eth" in t:
-        tags.append("#Ethereum")
-    if "solana" in t or "sol" in t:
-        tags.append("#Solana")
-    if "etf" in t:
-        tags.append("#ETF")
-    if "sec" in t:
-        tags.append("#Regulation")
-    if "hack" in t:
-        tags.append("#CryptoHack")
-
-    # fill to 3 tags
     base_tags = ["#Crypto","#Trading","#Blockchain"]
-    while len(tags) < 3:
-        tag = random.choice(base_tags)
-        if tag not in tags:
-            tags.append(tag)
-
-    return " ".join(tags[:3])
+    return " ".join(random.sample(base_tags, 3))
 
 # ========================= TELEGRAM =========================
 async def send_to_telegram(title, link, source, impact):
@@ -197,7 +169,6 @@ async def fetch_news(scheduled=True):
 
                 impact = get_impact_score(title)
 
-                # GLOBAL LOW LIMIT
                 if impact[1] == "low":
                     if total_low_sent >= MAX_LOW:
                         continue
@@ -220,14 +191,8 @@ async def api_news():
     rows = cursor.fetchall()
 
     return JSONResponse([
-        {"signal": r[0], "time": r[1]} for r in rows
+        {"signal": r[0] or "No data", "time": r[1]} for r in rows
     ])
-
-# ========================= TEST TELEGRAM =========================
-@app.get("/test-telegram")
-async def test():
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="🧪 Telegram working perfectly")
-    return {"status":"sent"}
 
 # ========================= DASHBOARD =========================
 @app.get("/", response_class=HTMLResponse)
@@ -241,6 +206,7 @@ async def home(request: Request):
 body{background:#0b0f14;color:#e6edf3;font-family:Arial;margin:0}
 .header{padding:15px;background:#111;color:#00ffcc;font-size:20px}
 .card{background:#161b22;margin:10px;padding:15px;border-left:4px solid #00ffcc;border-radius:10px;white-space:pre-wrap}
+.empty{padding:20px;color:#888}
 button{background:#00ffcc;border:none;padding:10px;margin:10px;cursor:pointer;font-weight:bold;border-radius:5px}
 </style>
 </head>
@@ -249,31 +215,34 @@ button{background:#00ffcc;border:none;padding:10px;margin:10px;cursor:pointer;fo
 <div class="header">📊 Crypto Intelligence Engine</div>
 
 <button onclick="fetchNow()">⚡ Fetch News</button>
-<button onclick="testTG()">🧪 Test Telegram</button>
 
 <div id="feed">Loading...</div>
 
 <script>
 async function load(){
-    const res = await fetch('/api/news');
-    const data = await res.json();
+    try{
+        const res = await fetch('/api/news');
+        const data = await res.json();
 
-    let html="";
-    data.forEach(item=>{
-        html+=`<div class="card">${item.signal}</div>`;
-    });
+        let html="";
 
-    document.getElementById("feed").innerHTML=html;
+        if(data.length === 0){
+            html = "<div class='empty'>No news yet. Click Fetch News.</div>";
+        } else {
+            data.forEach(item=>{
+                html+=`<div class="card">${item.signal}</div>`;
+            });
+        }
+
+        document.getElementById("feed").innerHTML=html;
+    }catch(err){
+        document.getElementById("feed").innerHTML="<div class='empty'>Error loading data</div>";
+    }
 }
 
 async function fetchNow(){
     await fetch('/fetch-now');
     alert("Fetching...");
-}
-
-async function testTG(){
-    await fetch('/test-telegram');
-    alert("Telegram sent");
 }
 
 load();
@@ -303,4 +272,4 @@ for t in times:
 
 scheduler.start()
 
-print("🚀 SYSTEM FULLY OPTIMIZED")
+print("🚀 SYSTEM STABLE + DASHBOARD FIXED")
