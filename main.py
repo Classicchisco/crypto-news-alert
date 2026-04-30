@@ -40,10 +40,11 @@ WAT = pytz.timezone("Africa/Lagos")
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
-# ========================= DATABASE (FIXED + SAFE) =========================
+# ========================= DATABASE (FIXED + SELF-HEALING) =========================
 conn = sqlite3.connect("database.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# Create table (safe)
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS seen_news (
     id TEXT PRIMARY KEY,
@@ -56,6 +57,13 @@ CREATE TABLE IF NOT EXISTS seen_news (
 )
 """)
 conn.commit()
+
+# SAFE MIGRATION (prevents Render crashes)
+try:
+    cursor.execute("ALTER TABLE seen_news ADD COLUMN signal_text TEXT DEFAULT ''")
+    conn.commit()
+except:
+    pass
 
 # ========================= HELPERS =========================
 def hash_id(text):
@@ -82,7 +90,6 @@ def impact_class(title):
 
 def impact_score(title, iclass):
     score = 10
-
     if iclass == "high":
         score += 60
     elif iclass == "medium":
@@ -181,7 +188,7 @@ def commentary(title, iclass):
         return "Strong catalyst → volatility expansion."
     return "Low impact → muted reaction."
 
-# ========================= SEND ENGINE =========================
+# ========================= TELEGRAM + SAVE =========================
 async def send_to_telegram(title, link, source, impact):
     iclass = impact.split()[1] if len(impact.split()) > 1 else "low"
 
@@ -190,7 +197,6 @@ async def send_to_telegram(title, link, source, impact):
     signal, confidence = trading_signal(title, iclass)
     win_rate = win_rate_score(iclass, signal, confidence)
 
-    # FILTER
     if HIGH_PROBABILITY_ONLY and win_rate < 75:
         print(f"Skipped low quality: {title[:40]} (WR {win_rate})")
         return
@@ -209,7 +215,6 @@ async def send_to_telegram(title, link, source, impact):
 
     signal_text = msg or ""
 
-    # SAFE DB INSERT (NO CRASH)
     cursor.execute("""
     INSERT OR REPLACE INTO seen_news
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -263,11 +268,11 @@ async def fetch_news():
 
             await send_to_telegram(title, link, url, impact_text)
 
-# ========================= DASHBOARD (STABLE) =========================
+# ========================= DASHBOARD =========================
 @app.get("/", response_class=HTMLResponse)
 async def home():
     cursor.execute("""
-    SELECT signal_text, link
+    SELECT COALESCE(signal_text, title), link
     FROM seen_news
     ORDER BY added_at DESC
     LIMIT 50
@@ -284,8 +289,6 @@ async def home():
     """
 
     for signal_text, link in rows:
-        signal_text = signal_text or "No signal"
-
         html += f"""
         <div style="margin-bottom:15px;padding:10px;background:#111;border-radius:8px;">
             <pre style="white-space:pre-wrap;color:#00ff99;">{signal_text}</pre>
