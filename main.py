@@ -91,12 +91,12 @@ async def send_telegram(message):
     except Exception as e:
         print("Telegram error:", e)
 
-# ========================= ALERT BUILDER =========================
+# ========================= ALERT ENGINE =========================
 async def send_alert(title, link, source):
     impact_text, iclass = impact_class(title)
     signal, strength = signal_engine(title, iclass)
 
-    msg = f"""
+    message = f"""
 {impact_text} NEWS ALERT
 
 📰 {title}
@@ -108,7 +108,20 @@ async def send_alert(title, link, source):
 🔗 {link}
 """
 
-    await send_telegram(msg)
+    # SAVE SAME DATA FOR DASHBOARD
+    cursor.execute("""
+    INSERT OR REPLACE INTO seen_news VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        hash_id(title),
+        title,
+        link,
+        source,
+        message,
+        datetime.now().isoformat()
+    ))
+    conn.commit()
+
+    await send_telegram(message)
 
 # ========================= FETCH NEWS =========================
 async def fetch_news():
@@ -128,21 +141,15 @@ async def fetch_news():
             if cursor.fetchone():
                 continue
 
-            cursor.execute("""
-            INSERT INTO seen_news VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                news_id,
-                title,
-                link,
-                url,
-                "sent",
-                datetime.now().isoformat()
-            ))
-            conn.commit()
-
             await send_alert(title, link, url)
 
-# ========================= TEST TELEGRAM =========================
+# ========================= MANUAL FETCH ENDPOINT =========================
+@app.get("/fetch-now")
+async def manual_fetch(background_tasks: BackgroundTasks):
+    background_tasks.add_task(fetch_news)
+    return {"status": "fetch started"}
+
+# ========================= TELEGRAM TEST =========================
 @app.get("/test-telegram")
 async def test_telegram(background_tasks: BackgroundTasks):
 
@@ -153,18 +160,17 @@ async def test_telegram(background_tasks: BackgroundTasks):
 🔥 Strength: 85/100
 🎯 Entry: $60,000 - $60,500
 
-✅ System working correctly
+✅ System working perfectly
 """
 
     background_tasks.add_task(send_telegram, msg)
-
     return {"status": "Telegram test sent"}
 
-# ========================= API =========================
+# ========================= API FOR DASHBOARD =========================
 @app.get("/api/news")
 async def api_news():
     cursor.execute("""
-    SELECT title, signal_text, added_at
+    SELECT signal_text, added_at
     FROM seen_news
     ORDER BY added_at DESC
     LIMIT 30
@@ -172,7 +178,7 @@ async def api_news():
     rows = cursor.fetchall()
 
     return JSONResponse([
-        {"title": r[0], "signal": r[1], "time": r[2]} for r in rows
+        {"signal": r[0], "time": r[1]} for r in rows
     ])
 
 # ========================= DASHBOARD =========================
@@ -203,6 +209,7 @@ body {
     padding:12px;
     border-left:4px solid #00ff99;
     border-radius:8px;
+    white-space:pre-wrap;
 }
 
 button {
@@ -212,6 +219,7 @@ button {
     margin:10px;
     cursor:pointer;
     font-weight:bold;
+    border-radius:5px;
 }
 </style>
 </head>
@@ -222,6 +230,7 @@ button {
 📊 Crypto Intelligence Engine
 </div>
 
+<button onclick="fetchNews()">⚡ Fetch News Now</button>
 <button onclick="testTG()">🧪 Test Telegram</button>
 
 <div id="feed">Loading...</div>
@@ -235,14 +244,15 @@ async function load(){
     let html = "";
 
     data.forEach(item => {
-        html += `<div class="card">
-        📰 ${item.title}<br>
-        ${item.signal}<br>
-        ${item.time}
-        </div>`;
+        html += `<div class="card">${item.signal}</div>`;
     });
 
     document.getElementById("feed").innerHTML = html;
+}
+
+async function fetchNews(){
+    await fetch('/fetch-now');
+    alert("Fetching news...");
 }
 
 async function testTG(){
@@ -259,15 +269,9 @@ setInterval(load, 5000);
 </html>
 """)
 
-# ========================= MANUAL FETCH =========================
-@app.get("/fetch-now")
-async def manual():
-    asyncio.create_task(fetch_news())
-    return {"status": "fetch started"}
-
 # ========================= SCHEDULER =========================
 scheduler = AsyncIOScheduler(timezone=WAT)
 scheduler.add_job(fetch_news, "interval", minutes=5)
 scheduler.start()
 
-print("🚀 FULL SYSTEM RUNNING")
+print("🚀 FULL INTELLIGENCE SYSTEM RUNNING")
