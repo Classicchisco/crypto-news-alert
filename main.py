@@ -8,7 +8,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import sqlite3
 import telegram
 import pytz
-import requests
 
 app = FastAPI(title="Crypto Intelligence Engine")
 
@@ -20,6 +19,7 @@ RSS_FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://cryptoslate.com/feed/",
+    "https://decrypt.co/feed",
 ]
 
 WAT = pytz.timezone("Africa/Lagos")
@@ -45,38 +45,77 @@ conn.commit()
 def hash_id(text):
     return hashlib.md5(text.encode()).hexdigest()
 
-# ========================= TELEGRAM SENDER =========================
-async def send_telegram(text):
+# ========================= IMPACT ENGINE =========================
+def impact_class(title):
+    t = title.lower()
+
+    high = ["etf", "sec", "hack", "exploit", "ban", "lawsuit", "approval"]
+    medium = ["listing", "partnership", "upgrade", "adoption", "whale", "binance"]
+
+    if any(x in t for x in high):
+        return "🔴 HIGH", "high"
+    if any(x in t for x in medium):
+        return "🟡 MEDIUM", "medium"
+    return "🟢 LOW", "low"
+
+# ========================= SIGNAL ENGINE =========================
+def signal_engine(title, iclass):
+    t = title.lower()
+
+    bullish = ["etf", "approval", "adoption", "partnership", "upgrade"]
+    bearish = ["hack", "exploit", "ban", "sec", "lawsuit"]
+
+    score = 50
+
+    for b in bullish:
+        if b in t:
+            score += 15
+
+    for b in bearish:
+        if b in t:
+            score -= 20
+
+    if iclass == "high":
+        score += 15
+
+    if score >= 70:
+        return "📈 LONG", score
+    elif score <= 40:
+        return "📉 SHORT", score
+    return "⚖️ NEUTRAL", score
+
+# ========================= TELEGRAM =========================
+async def send_telegram(message):
     try:
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
     except Exception as e:
         print("Telegram error:", e)
 
-# ========================= TEST TELEGRAM =========================
-@app.get("/test-telegram")
-async def test_telegram(background_tasks: BackgroundTasks):
+# ========================= ALERT BUILDER =========================
+async def send_alert(title, link, source):
+    impact_text, iclass = impact_class(title)
+    signal, strength = signal_engine(title, iclass)
 
-    msg = """
-🧪 TEST ALERT
+    msg = f"""
+{impact_text} NEWS ALERT
 
-📊 Signal: 📈 LONG
-🔥 Strength: 87/100
-🎯 Entry: $60,000 - $60,500
-🛑 Invalidation: $59,200
+📰 {title}
 
-✅ Telegram system working perfectly
+📡 Source: {source}
+📊 Signal: {signal}
+🔥 Strength: {strength}/100
+
+🔗 {link}
 """
 
-    background_tasks.add_task(send_telegram, msg)
-
-    return {"status": "Telegram test triggered"}
+    await send_telegram(msg)
 
 # ========================= FETCH NEWS =========================
 async def fetch_news():
     for url in RSS_FEEDS:
         feed = feedparser.parse(url)
 
-        for e in feed.entries[:10]:
+        for e in feed.entries[:15]:
             title = e.get("title", "")
             link = e.get("link", "")
 
@@ -89,13 +128,6 @@ async def fetch_news():
             if cursor.fetchone():
                 continue
 
-            signal_text = f"""
-📰 {title}
-
-📡 Source: {url}
-🔗 {link}
-"""
-
             cursor.execute("""
             INSERT INTO seen_news VALUES (?, ?, ?, ?, ?, ?)
             """, (
@@ -103,18 +135,36 @@ async def fetch_news():
                 title,
                 link,
                 url,
-                signal_text,
+                "sent",
                 datetime.now().isoformat()
             ))
             conn.commit()
 
-            await send_telegram(signal_text)
+            await send_alert(title, link, url)
 
-# ========================= DASHBOARD API =========================
+# ========================= TEST TELEGRAM =========================
+@app.get("/test-telegram")
+async def test_telegram(background_tasks: BackgroundTasks):
+
+    msg = """
+🧪 TEST ALERT
+
+📈 Signal: LONG
+🔥 Strength: 85/100
+🎯 Entry: $60,000 - $60,500
+
+✅ System working correctly
+"""
+
+    background_tasks.add_task(send_telegram, msg)
+
+    return {"status": "Telegram test sent"}
+
+# ========================= API =========================
 @app.get("/api/news")
 async def api_news():
     cursor.execute("""
-    SELECT signal_text, added_at
+    SELECT title, signal_text, added_at
     FROM seen_news
     ORDER BY added_at DESC
     LIMIT 30
@@ -122,7 +172,7 @@ async def api_news():
     rows = cursor.fetchall()
 
     return JSONResponse([
-        {"signal": r[0], "time": r[1]} for r in rows
+        {"title": r[0], "signal": r[1], "time": r[2]} for r in rows
     ])
 
 # ========================= DASHBOARD =========================
@@ -145,7 +195,6 @@ body {
 .header {
     padding:15px;
     background:#111;
-    font-size:18px;
 }
 
 .card {
@@ -154,15 +203,14 @@ body {
     padding:12px;
     border-left:4px solid #00ff99;
     border-radius:8px;
-    white-space:pre-wrap;
 }
 
 button {
     background:#00ff99;
     border:none;
     padding:10px;
-    cursor:pointer;
     margin:10px;
+    cursor:pointer;
     font-weight:bold;
 }
 </style>
@@ -171,10 +219,10 @@ button {
 <body>
 
 <div class="header">
-📊 Crypto Intelligence Live Terminal
+📊 Crypto Intelligence Engine
 </div>
 
-<button onclick="testTG()">🧪 Test Telegram Alert</button>
+<button onclick="testTG()">🧪 Test Telegram</button>
 
 <div id="feed">Loading...</div>
 
@@ -187,7 +235,11 @@ async function load(){
     let html = "";
 
     data.forEach(item => {
-        html += `<div class="card">${item.signal}</div>`;
+        html += `<div class="card">
+        📰 ${item.title}<br>
+        ${item.signal}<br>
+        ${item.time}
+        </div>`;
     });
 
     document.getElementById("feed").innerHTML = html;
@@ -195,7 +247,7 @@ async function load(){
 
 async function testTG(){
     await fetch('/test-telegram');
-    alert("Telegram test sent 🚀");
+    alert("Telegram test sent");
 }
 
 load();
@@ -218,4 +270,4 @@ scheduler = AsyncIOScheduler(timezone=WAT)
 scheduler.add_job(fetch_news, "interval", minutes=5)
 scheduler.start()
 
-print("🚀 TEMP SYSTEM RUNNING")
+print("🚀 FULL SYSTEM RUNNING")
