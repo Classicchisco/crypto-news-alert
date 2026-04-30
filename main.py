@@ -33,7 +33,7 @@ WAT = pytz.timezone("Africa/Lagos")
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
-# ========================= DB =========================
+# ========================= DB (FIXED) =========================
 conn = sqlite3.connect("database.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS seen_news (
     link TEXT,
     source TEXT,
     impact TEXT,
+    signal_text TEXT,
     added_at TEXT
 )
 """)
@@ -82,16 +83,9 @@ def impact_score(title, iclass):
         score += 10
 
     boosts = {
-        "etf": 20,
-        "sec": 15,
-        "hack": 25,
-        "exploit": 25,
-        "approval": 20,
-        "ban": 20,
-        "blackrock": 20,
-        "fidelity": 15,
-        "whale": 10,
-        "binance": 10
+        "etf": 20, "sec": 15, "hack": 25, "exploit": 25,
+        "approval": 20, "ban": 20, "blackrock": 20,
+        "fidelity": 15, "whale": 10, "binance": 10
     }
 
     t = title.lower()
@@ -153,6 +147,7 @@ def entry_engine(price, signal):
 
     if signal == "📈 LONG":
         return f"${price*0.995:,.0f} - ${price*1.005:,.0f}", f"${price*0.98:,.0f}", "Medium"
+
     if signal == "📉 SHORT":
         return f"${price*1.005:,.0f} - ${price*0.995:,.0f}", f"${price*1.02:,.0f}", "Medium"
 
@@ -160,7 +155,6 @@ def entry_engine(price, signal):
 
 def commentary(title, iclass):
     t = title.lower()
-
     if "etf" in t:
         return "ETF narrative impacting liquidity expectations."
     if "sec" in t:
@@ -180,7 +174,7 @@ async def send_to_telegram(title, link, source, impact):
     signal, confidence = trading_signal(title, iclass)
     win_rate = win_rate_score(iclass, signal, confidence)
 
-    # HIGH PROBABILITY FILTER
+    # FILTER
     if HIGH_PROBABILITY_ONLY and win_rate < 75:
         print(f"Skipped: {title[:40]} (WR {win_rate})")
         return
@@ -196,6 +190,14 @@ async def send_to_telegram(title, link, source, impact):
     msg += f"🛑 Invalidation: {invalidation}\n"
     msg += f"⚠️ Risk: {risk}\n"
     msg += f"\n🔗 {link}"
+
+    # SAVE FULL SIGNAL FOR DASHBOARD (FIXED)
+    signal_text = msg
+
+    cursor.execute("""
+    INSERT INTO seen_news VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (hash_id(title), title, link, source, impact, signal_text, datetime.now().isoformat()))
+    conn.commit()
 
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
 
@@ -230,27 +232,21 @@ async def fetch_news():
             if norm in seen:
                 continue
 
-            news_id = hash_id(title)
-
-            cursor.execute("SELECT id FROM seen_news WHERE id=?", (news_id,))
-            if cursor.fetchone():
-                continue
-
             seen[norm] = True
 
             impact_text, _ = impact_class(title)
 
-            cursor.execute("""
-            INSERT INTO seen_news VALUES (?, ?, ?, ?, ?, ?)
-            """, (news_id, title, link, url, impact_text, datetime.now().isoformat()))
-            conn.commit()
-
             await send_to_telegram(title, link, url, impact_text)
 
-# ========================= DASHBOARD =========================
+# ========================= DASHBOARD (FIXED) =========================
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    cursor.execute("SELECT title, link, impact FROM seen_news ORDER BY added_at DESC LIMIT 50")
+    cursor.execute("""
+    SELECT signal_text, link 
+    FROM seen_news 
+    ORDER BY added_at DESC 
+    LIMIT 50
+    """)
     rows = cursor.fetchall()
 
     html = """
@@ -258,10 +254,17 @@ async def home():
     <body style="background:#0b0f14;color:#00ff99;font-family:Arial;padding:20px;">
     <h1>Crypto Intelligence Dashboard</h1>
     <a href="/fetch-now" style="background:#00ff99;color:black;padding:10px;text-decoration:none;">Manual Fetch</a>
+    <hr>
     """
 
-    for r in rows:
-        html += f"<p>{r[2]} - <a href='{r[1]}' style='color:#4da3ff'>{r[0]}</a></p>"
+    for signal_text, link in rows:
+        if signal_text:
+            html += f"""
+            <div style="margin-bottom:15px;padding:10px;background:#111;border-radius:8px;">
+                <pre style="white-space:pre-wrap;color:#00ff99;">{signal_text}</pre>
+                <a href="{link}" style="color:#4da3ff;">Open Source</a>
+            </div>
+            """
 
     html += "</body></html>"
     return HTMLResponse(html)
