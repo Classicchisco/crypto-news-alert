@@ -40,11 +40,10 @@ WAT = pytz.timezone("Africa/Lagos")
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
-# ========================= DATABASE (FIXED + SELF-HEALING) =========================
+# ========================= DATABASE =========================
 conn = sqlite3.connect("database.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# Create table (safe)
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS seen_news (
     id TEXT PRIMARY KEY,
@@ -58,7 +57,7 @@ CREATE TABLE IF NOT EXISTS seen_news (
 """)
 conn.commit()
 
-# SAFE MIGRATION (prevents Render crashes)
+# safe migration (prevents Render crashes)
 try:
     cursor.execute("ALTER TABLE seen_news ADD COLUMN signal_text TEXT DEFAULT ''")
     conn.commit()
@@ -110,9 +109,8 @@ def impact_score(title, iclass):
         "binance": 10
     }
 
-    t = title.lower()
     for k, v in boosts.items():
-        if k in t:
+        if k in title.lower():
             score += v
 
     return min(score, 100)
@@ -143,8 +141,7 @@ def trading_signal(title, iclass):
         return "📈 LONG", min(100, score)
     elif score <= 40:
         return "📉 SHORT", max(0, score)
-    else:
-        return "⚖️ NEUTRAL", score
+    return "⚖️ NEUTRAL", score
 
 def win_rate_score(iclass, signal, confidence):
     base = confidence
@@ -156,9 +153,7 @@ def win_rate_score(iclass, signal, confidence):
     else:
         base -= 5
 
-    if signal == "📈 LONG":
-        base += 3
-    elif signal == "📉 SHORT":
+    if signal in ["📈 LONG", "📉 SHORT"]:
         base += 3
 
     return max(0, min(100, base))
@@ -188,7 +183,7 @@ def commentary(title, iclass):
         return "Strong catalyst → volatility expansion."
     return "Low impact → muted reaction."
 
-# ========================= TELEGRAM + SAVE =========================
+# ========================= TELEGRAM =========================
 async def send_to_telegram(title, link, source, impact):
     iclass = impact.split()[1] if len(impact.split()) > 1 else "low"
 
@@ -213,7 +208,7 @@ async def send_to_telegram(title, link, source, impact):
     msg += f"⚠️ Risk: {risk}\n"
     msg += f"\n🔗 {link}"
 
-    signal_text = msg or ""
+    signal_text = msg
 
     cursor.execute("""
     INSERT OR REPLACE INTO seen_news
@@ -230,18 +225,6 @@ async def send_to_telegram(title, link, source, impact):
     conn.commit()
 
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-
-    await asyncio.sleep(30)
-
-    btc_after = get_btc_price()
-    if btc_before and btc_after:
-        change = ((btc_after - btc_before) / btc_before) * 100
-        if abs(change) >= 2:
-            direction = "📈" if change > 0 else "📉"
-            await bot.send_message(
-                chat_id=TELEGRAM_CHAT_ID,
-                text=f"{direction} BTC moved {change:.2f}% after news"
-            )
 
 # ========================= FETCH =========================
 async def fetch_news():
@@ -272,7 +255,7 @@ async def fetch_news():
 @app.get("/", response_class=HTMLResponse)
 async def home():
     cursor.execute("""
-    SELECT COALESCE(signal_text, title), link
+    SELECT signal_text, link, impact, added_at
     FROM seen_news
     ORDER BY added_at DESC
     LIMIT 50
@@ -288,11 +271,27 @@ async def home():
     <hr>
     """
 
-    for signal_text, link in rows:
+    for signal_text, link, impact, added_at in rows:
         html += f"""
-        <div style="margin-bottom:15px;padding:10px;background:#111;border-radius:8px;">
-            <pre style="white-space:pre-wrap;color:#00ff99;">{signal_text}</pre>
-            <a href="{link}" style="color:#4da3ff;">Open Source</a>
+        <div style="
+            margin-bottom:15px;
+            padding:12px;
+            background:#111;
+            border-radius:10px;
+            border-left:4px solid #00ff99;
+        ">
+            <div style="color:#888;font-size:12px;">
+                {impact} • {added_at}
+            </div>
+
+            <pre style="
+                white-space:pre-wrap;
+                color:#00ff99;
+                font-size:14px;
+                margin-top:8px;
+            ">{signal_text}</pre>
+
+            <a href="{link}" style="color:#4da3ff;">🔗 Open Article</a>
         </div>
         """
 
