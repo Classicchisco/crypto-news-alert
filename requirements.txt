@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 feedparser
-python-telegram-bot
 apscheduler
-python-dotenv
-jinja2
+python-telegram-bot
+pytz
+requests
