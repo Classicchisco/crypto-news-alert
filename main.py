@@ -1,6 +1,7 @@
 import feedparser
 import hashlib
 import asyncio
+import random
 from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -58,72 +59,80 @@ def get_impact_score(title: str):
         return "🟡 Medium Impact", "medium"
     return "🟢 Low Impact", "low"
 
-# ========================= ADVANCED SENTIMENT ENGINE =========================
-POSITIVE_WEIGHTS = {
-    "etf": 25,
-    "approval": 30,
-    "adoption": 20,
-    "partnership": 15,
-    "institutional": 20,
-    "upgrade": 10,
-    "bullish": 15,
-    "surge": 20,
-    "rally": 20
-}
-
-NEGATIVE_WEIGHTS = {
-    "hack": -35,
-    "exploit": -35,
-    "ban": -25,
-    "sec": -20,
-    "lawsuit": -25,
-    "rejected": -30,
-    "crash": -30,
-    "drop": -20,
-    "bearish": -15
-}
+# ========================= SENTIMENT ENGINE =========================
+POSITIVE = ["etf","approval","adoption","partnership","institutional","surge","rally"]
+NEGATIVE = ["hack","exploit","ban","sec","lawsuit","rejected","crash","drop"]
 
 def sentiment_score(title):
     t = title.lower()
     score = 0
 
-    for k, v in POSITIVE_WEIGHTS.items():
-        if k in t:
-            score += v
+    for w in POSITIVE:
+        if w in t:
+            score += random.randint(10,25)
 
-    for k, v in NEGATIVE_WEIGHTS.items():
-        if k in t:
-            score += v
+    for w in NEGATIVE:
+        if w in t:
+            score -= random.randint(15,30)
 
-    return max(-100, min(100, score))
+    return score
 
-# ========================= SIGNAL ENGINE =========================
+# ========================= SIGNAL =========================
 def signal_engine(title, iclass):
     score = sentiment_score(title)
 
-    # impact influence (light, not dominating)
+    # variability factors
+    word_count = len(title.split())
+    score += int(word_count * 0.5)
+
     if iclass == "high":
         score *= 1.2
     elif iclass == "medium":
         score *= 1.05
 
+    score += random.randint(-5,5)  # small variation
+
     score = max(-100, min(100, score))
 
-    if score >= 25:
-        return "📈 STRONG LONG", int(score)
-    elif score >= 10:
-        return "📈 LONG", int(score)
-    elif score <= -25:
-        return "📉 STRONG SHORT", int(abs(score))
-    elif score <= -10:
-        return "📉 SHORT", int(abs(score))
+    if score > 15:
+        return "📈 Bullish", abs(int(score))
+    elif score < -15:
+        return "📉 Bearish", abs(int(score))
     else:
-        return "⚖️ NEUTRAL", int(abs(score))
+        return "⚖️ Neutral", abs(int(score))
+
+# ========================= TAGS =========================
+def generate_tags(title):
+    t = title.lower()
+    tags = []
+
+    if "bitcoin" in t or "btc" in t:
+        tags.append("#Bitcoin")
+    if "ethereum" in t or "eth" in t:
+        tags.append("#Ethereum")
+    if "solana" in t or "sol" in t:
+        tags.append("#Solana")
+    if "etf" in t:
+        tags.append("#ETF")
+    if "sec" in t:
+        tags.append("#Regulation")
+    if "hack" in t:
+        tags.append("#CryptoHack")
+
+    # fill to 3 tags
+    base_tags = ["#Crypto","#Trading","#Blockchain"]
+    while len(tags) < 3:
+        tag = random.choice(base_tags)
+        if tag not in tags:
+            tags.append(tag)
+
+    return " ".join(tags[:3])
 
 # ========================= TELEGRAM =========================
 async def send_to_telegram(title, link, source, impact):
     impact_text, iclass = impact
     signal, strength = signal_engine(title, iclass)
+    tags = generate_tags(title)
 
     message = f"""
 {impact_text} NEWS ALERT
@@ -133,6 +142,8 @@ async def send_to_telegram(title, link, source, impact):
 📡 Source: {source}
 📊 Signal: {signal}
 🔥 Strength: {strength}/100
+
+🏷️ {tags}
 
 🔗 {link}
 """
@@ -162,6 +173,7 @@ async def fetch_news(scheduled=True):
     print(f"[{now.strftime('%H:%M:%S')}] Fetching...")
 
     MAX_LOW = 5
+    total_low_sent = 0
 
     for feed_url in RSS_FEEDS:
         try:
@@ -169,9 +181,6 @@ async def fetch_news(scheduled=True):
             source = feed.feed.get('title', 'Unknown')
 
             entries = feed.entries[:30]
-
-            high_medium = []
-            low = []
 
             for entry in entries:
                 title = entry.get('title','').strip()
@@ -188,19 +197,12 @@ async def fetch_news(scheduled=True):
 
                 impact = get_impact_score(title)
 
-                if impact[1] in ["high","medium"]:
-                    high_medium.append((title,link,impact))
-                else:
-                    low.append((entry,title,link,impact))
+                # GLOBAL LOW LIMIT
+                if impact[1] == "low":
+                    if total_low_sent >= MAX_LOW:
+                        continue
+                    total_low_sent += 1
 
-            low = sorted(low, key=lambda x: x[0].get("published_parsed",(0,)), reverse=True)
-
-            # ✅ SAME LIMIT FOR MANUAL + SCHEDULED
-            low = low[:MAX_LOW]
-
-            final = high_medium + [(t,l,i) for _,t,l,i in low]
-
-            for title, link, impact in final:
                 await send_to_telegram(title, link, source, impact)
 
         except Exception as e:
@@ -238,7 +240,7 @@ async def home(request: Request):
 <style>
 body{background:#0b0f14;color:#e6edf3;font-family:Arial;margin:0}
 .header{padding:15px;background:#111;color:#00ffcc;font-size:20px}
-.card{background:#161b22;margin:10px;padding:15px;border-left:4px solid #00ffcc;border-radius:10px;white-space:pre-wrap;color:#e6edf3}
+.card{background:#161b22;margin:10px;padding:15px;border-left:4px solid #00ffcc;border-radius:10px;white-space:pre-wrap}
 button{background:#00ffcc;border:none;padding:10px;margin:10px;cursor:pointer;font-weight:bold;border-radius:5px}
 </style>
 </head>
@@ -285,7 +287,7 @@ setInterval(load,5000);
 # ========================= MANUAL =========================
 @app.get("/fetch-now")
 async def manual():
-    asyncio.create_task(fetch_news(True))  # SAME AS SCHEDULED
+    asyncio.create_task(fetch_news(True))
     return {"status":"running"}
 
 # ========================= SCHEDULER =========================
@@ -301,4 +303,4 @@ for t in times:
 
 scheduler.start()
 
-print("🚀 SYSTEM UPGRADED SUCCESSFULLY")
+print("🚀 SYSTEM FULLY OPTIMIZED")
