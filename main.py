@@ -3,7 +3,7 @@ import hashlib
 import asyncio
 from datetime import datetime
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import sqlite3
 import telegram
@@ -26,8 +26,15 @@ RSS_FEEDS = [
     "https://thedefiant.io/feed/",
 ]
 
-HIGH_IMPACT = ["etf", "sec", "regulation", "ban", "hack", "exploit", "lawsuit", "approval", "blackrock", "fidelity"]
-MEDIUM_IMPACT = ["listing", "partnership", "upgrade", "mainnet", "adoption", "whale", "binance"]
+HIGH_IMPACT = [
+    "etf", "sec", "regulation", "ban", "hack", "exploit",
+    "lawsuit", "approval", "rejected", "blackrock", "fidelity", "gary gensler"
+]
+
+MEDIUM_IMPACT = [
+    "listing", "partnership", "upgrade", "mainnet",
+    "adoption", "institutional", "whale", "binance"
+]
 
 WAT = pytz.timezone("Africa/Lagos")
 
@@ -50,7 +57,7 @@ CREATE TABLE IF NOT EXISTS seen_news (
 """)
 conn.commit()
 
-# safe migration
+# safe migration (prevents Render crashes)
 try:
     cursor.execute("ALTER TABLE seen_news ADD COLUMN signal_text TEXT DEFAULT ''")
     conn.commit()
@@ -64,52 +71,144 @@ def hash_id(text):
 def normalize(t):
     return " ".join(t.lower().split())
 
+def get_btc_price():
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+        return float(requests.get(url, timeout=5).json()["bitcoin"]["usd"])
+    except:
+        return None
+
 # ========================= INTELLIGENCE =========================
 def impact_class(title):
     t = title.lower()
     if any(k in t for k in HIGH_IMPACT):
-        return "HIGH", "high"
+        return "🔴 High Impact", "high"
     if any(k in t for k in MEDIUM_IMPACT):
-        return "MEDIUM", "medium"
-    return "LOW", "low"
+        return "🟡 Medium Impact", "medium"
+    return "🟢 Low Impact", "low"
 
-def score(title, iclass):
-    base = 50
+def impact_score(title, iclass):
+    score = 10
     if iclass == "high":
-        base += 30
+        score += 60
     elif iclass == "medium":
-        base += 15
+        score += 35
     else:
-        base -= 10
-    return min(100, max(0, base))
+        score += 10
 
-def signal(title):
+    boosts = {
+        "etf": 20,
+        "sec": 15,
+        "hack": 25,
+        "exploit": 25,
+        "approval": 20,
+        "ban": 20,
+        "blackrock": 20,
+        "fidelity": 15,
+        "whale": 10,
+        "binance": 10
+    }
+
+    for k, v in boosts.items():
+        if k in title.lower():
+            score += v
+
+    return min(score, 100)
+
+def trading_signal(title, iclass):
     t = title.lower()
-    if any(x in t for x in ["etf", "approval", "adoption", "partnership"]):
-        return "📈 LONG"
-    if any(x in t for x in ["hack", "exploit", "ban", "sec"]):
-        return "📉 SHORT"
-    return "⚖️ NEUTRAL"
+    score = 50
 
-def entry_mock():
-    price = 60000
-    return f"${price*0.99:,.0f} - ${price*1.01:,.0f}"
+    bullish = ["etf", "adoption", "approval", "partnership", "upgrade", "institutional"]
+    bearish = ["hack", "exploit", "ban", "lawsuit", "sec", "rejection"]
 
-# ========================= STORE =========================
-async def process(title, link, source):
-    impact_text, iclass = impact_class(title)
-    sig = signal(title)
-    sc = score(title, iclass)
+    for b in bullish:
+        if b in t:
+            score += 15
 
-    text = f"""
-{impact_text} • {title}
+    for b in bearish:
+        if b in t:
+            score -= 20
 
-📊 Signal: {sig}
-🔥 Strength: {sc}/100
-🎯 Entry: {entry_mock()}
+    if iclass == "high":
+        score += 20
+    elif iclass == "medium":
+        score += 10
+    else:
+        score -= 5
 
-🔗 {link}
-"""
+    if score >= 70:
+        return "📈 LONG", min(100, score)
+    elif score <= 40:
+        return "📉 SHORT", max(0, score)
+    return "⚖️ NEUTRAL", score
+
+def win_rate_score(iclass, signal, confidence):
+    base = confidence
+
+    if iclass == "high":
+        base += 10
+    elif iclass == "medium":
+        base += 5
+    else:
+        base -= 5
+
+    if signal in ["📈 LONG", "📉 SHORT"]:
+        base += 3
+
+    return max(0, min(100, base))
+
+def entry_engine(price, signal):
+    if not price:
+        return "N/A", "N/A", "Low"
+
+    if signal == "📈 LONG":
+        return f"${price*0.995:,.0f} - ${price*1.005:,.0f}", f"${price*0.98:,.0f}", "Medium"
+
+    if signal == "📉 SHORT":
+        return f"${price*1.005:,.0f} - ${price*0.995:,.0f}", f"${price*1.02:,.0f}", "Medium"
+
+    return "Wait", "N/A", "Low"
+
+def commentary(title, iclass):
+    t = title.lower()
+
+    if "etf" in t:
+        return "ETF narrative impacting liquidity expectations."
+    if "sec" in t:
+        return "Regulatory pressure increasing uncertainty."
+    if "hack" in t:
+        return "Security event → risk-off likely."
+    if iclass == "high":
+        return "Strong catalyst → volatility expansion."
+    return "Low impact → muted reaction."
+
+# ========================= TELEGRAM =========================
+async def send_to_telegram(title, link, source, impact):
+    iclass = impact.split()[1] if len(impact.split()) > 1 else "low"
+
+    btc_before = get_btc_price()
+
+    signal, confidence = trading_signal(title, iclass)
+    win_rate = win_rate_score(iclass, signal, confidence)
+
+    if HIGH_PROBABILITY_ONLY and win_rate < 75:
+        print(f"Skipped low quality: {title[:40]} (WR {win_rate})")
+        return
+
+    entry, invalidation, risk = entry_engine(btc_before, signal)
+
+    msg = f"{impact.split()[0]} {title}\n\n"
+    msg += f"🧠 {commentary(title, iclass)}\n"
+    msg += f"📊 Impact: {impact_score(title, iclass)}/100\n"
+    msg += f"📡 Signal: {signal} ({confidence}/100)\n"
+    msg += f"📊 Win Rate: {win_rate}%\n"
+    msg += f"\n🎯 Entry: {entry}\n"
+    msg += f"🛑 Invalidation: {invalidation}\n"
+    msg += f"⚠️ Risk: {risk}\n"
+    msg += f"\n🔗 {link}"
+
+    signal_text = msg
 
     cursor.execute("""
     INSERT OR REPLACE INTO seen_news
@@ -119,146 +218,101 @@ async def process(title, link, source):
         title,
         link,
         source,
-        impact_text,
-        text,
+        impact,
+        signal_text,
         datetime.now().isoformat()
     ))
     conn.commit()
 
-    try:
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
-    except:
-        pass
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
 
 # ========================= FETCH =========================
 async def fetch_news():
+    seen = {}
+
     for url in RSS_FEEDS:
         feed = feedparser.parse(url)
 
-        for e in feed.entries[:15]:
+        for e in feed.entries[:25]:
             title = e.get("title", "")
             link = e.get("link", "")
 
-            if not title:
+            if not title or not link:
                 continue
 
-            cursor.execute("SELECT id FROM seen_news WHERE id=?", (hash_id(title),))
-            if cursor.fetchone():
+            norm = normalize(title)
+
+            if norm in seen:
                 continue
 
-            await process(title, link, url)
+            seen[norm] = True
 
-# ========================= DASHBOARD DATA API (REALTIME) =========================
-@app.get("/api/news")
-async def api_news():
-    cursor.execute("""
-    SELECT signal_text, added_at
-    FROM seen_news
-    ORDER BY added_at DESC
-    LIMIT 30
-    """)
-    rows = cursor.fetchall()
+            impact_text, _ = impact_class(title)
 
-    return JSONResponse([
-        {"signal": r[0], "time": r[1]} for r in rows
-    ])
+            await send_to_telegram(title, link, url, impact_text)
 
-# ========================= TEST ENDPOINT =========================
-@app.get("/test")
-async def test():
-    await fetch_news()
-    return {"status": "test fetch triggered"}
-
-# ========================= DASHBOARD (TRADINGVIEW STYLE + LIVE) =========================
+# ========================= DASHBOARD =========================
 @app.get("/", response_class=HTMLResponse)
 async def home():
+    cursor.execute("""
+    SELECT signal_text, link, impact, added_at
+    FROM seen_news
+    ORDER BY added_at DESC
+    LIMIT 50
+    """)
 
-    return HTMLResponse("""
-<html>
-<head>
-<title>Crypto Intelligence Terminal</title>
+    rows = cursor.fetchall()
 
-<style>
-body {
-    margin:0;
-    font-family: Arial;
-    background:#0b0f14;
-    color:#00ff99;
-}
+    html = """
+    <html>
+    <body style="background:#0b0f14;color:#00ff99;font-family:Arial;padding:20px;">
+    <h1>Crypto Intelligence Dashboard</h1>
+    <a href="/fetch-now" style="background:#00ff99;color:black;padding:10px;text-decoration:none;">Manual Fetch</a>
+    <hr>
+    """
 
-.header {
-    padding:15px;
-    font-size:20px;
-    background:#111;
-    border-bottom:1px solid #222;
-}
+    for signal_text, link, impact, added_at in rows:
+        html += f"""
+        <div style="
+            margin-bottom:15px;
+            padding:12px;
+            background:#111;
+            border-radius:10px;
+            border-left:4px solid #00ff99;
+        ">
+            <div style="color:#888;font-size:12px;">
+                {impact} • {added_at}
+            </div>
 
-.container {
-    padding:20px;
-    display:flex;
-    flex-direction:column;
-    gap:15px;
-}
+            <pre style="
+                white-space:pre-wrap;
+                color:#00ff99;
+                font-size:14px;
+                margin-top:8px;
+            ">{signal_text}</pre>
 
-.card {
-    background:#111;
-    border-left:4px solid #00ff99;
-    padding:15px;
-    border-radius:10px;
-    white-space:pre-wrap;
-    box-shadow:0 0 10px rgba(0,255,153,0.1);
-}
-
-.time {
-    font-size:11px;
-    color:#777;
-}
-
-</style>
-</head>
-
-<body>
-
-<div class="header">
-📊 Crypto Intelligence Terminal (Live)
-</div>
-
-<div class="container" id="feed">
-Loading...
-</div>
-
-<script>
-
-async function loadData(){
-    const res = await fetch('/api/news');
-    const data = await res.json();
-
-    let html = "";
-
-    data.forEach(item => {
-        html += `
-        <div class="card">
-            <div class="time">${item.time}</div>
-            ${item.signal}
+            <a href="{link}" style="color:#4da3ff;">🔗 Open Article</a>
         </div>
-        `;
-    });
+        """
 
-    document.getElementById("feed").innerHTML = html;
-}
+    html += "</body></html>"
+    return HTMLResponse(html)
 
-loadData();
-setInterval(loadData, 5000);
-
-</script>
-
-</body>
-</html>
-""")
+@app.get("/fetch-now")
+async def manual():
+    asyncio.create_task(fetch_news())
+    return {"status": "running"}
 
 # ========================= SCHEDULER =========================
 scheduler = AsyncIOScheduler(timezone=WAT)
-scheduler.add_job(fetch_news, "interval", minutes=5)
+
+times = ["08:00","10:00","12:00","14:00","16:00","18:00","20:00","21:00","23:00"]
+
+for t in times:
+    scheduler.add_job(fetch_news, "cron",
+                      hour=t.split(":")[0],
+                      minute=t.split(":")[1])
+
 scheduler.start()
 
-print("🚀 LIVE TRADINGVIEW TERMINAL RUNNING")
+print("🚀 AI Crypto Signal Engine Running")
